@@ -27,14 +27,14 @@ Progress through **phases**, mark off **checkpoints**, and choose from **alterna
 - **Fork 2 (Manual):** Build your own download pipeline.
   - Use tools like `sentinelsat` or Landsat APIs to fetch raw granules.
   - Build robust retry logic and processing error handling.
-
+- **Fork 2 (Manual):** Satellite Fetcher
 ### Preprocessing Pipeline
 - For each field polygon and relevant time window:
   - Query intersecting Sentinel-1, Sentinel-2, and Landsat scenes.
   - Apply cloud masking (on optical imagery) and ensure Level-2A surface reflectance.
   - Clip to polygon bounding box.
   - Resample and co-register all imagery to a common 10 m grid.
-  - Save “chips” (e.g., 256×256 px) named as `{field_id}_{satellite}_{date}.tif`.
+  - Save “chips” (e.g., 64×64 px) named as `{field_id}_{satellite}_{date}.tif`.
 
 ---
 
@@ -131,23 +131,20 @@ Key highlights include:
 - **Continuous time modeling**: The architecture supports interpolation/extrapolation of temporal gaps—addressing cloud cover and revisit limitations.
 - **Accessibility**: Made available via Google Earth Engine as "Satellite Embedding" layers (2017–2024) for a wide range of users.
 
-**How this aligns with your approach:**
+**How this aligns with our approach:**
 
 - **Self-supervised foundation**: The idea of training a spatio-temporal model to produce embeddings directly parallels AlphaEarth’s embedding field concept.
-- **Efficiency & scalability**: Although you may not match AlphaEarth’s global scale, forecasting and compression concepts (e.g., masked reconstruction) are similar in spirit.
-- **Time-aware modeling**: Their "Space-Time Precision" architecture inspires your temporal encoding and transformer-based modeling strategies.
-- **Downstream utility**: Like how AlphaEarth supports diverse applications (crop mapping, ecosystems, etc.), your downstream heads approach the same principle of transferring general embeddings to specific tasks.
+- **Efficiency & scalability**: Although we may not match AlphaEarth’s global scale, forecasting and compression concepts (e.g., masked reconstruction) are similar in spirit.
+- **Time-aware modeling**: Their "Space-Time Precision" architecture inspires our temporal encoding and transformer-based modeling strategies.
+- **Downstream utility**: Like how AlphaEarth supports diverse applications (crop mapping, ecosystems, etc.), our downstream heads approach the same principle of transferring general embeddings to specific tasks.
 
 **Possible enhancements to consider:**
 
-- Adopt multi-sensor fusion (e.g., combining optical + SAR) directly in your model, rather than just preprocessing separately.
+- Adopt multi-sensor fusion (e.g., combining optical + SAR) directly in our model, rather than just preprocessing separately.
 - Introduce embedding compression or dimensionality reduction to reduce storage and speed up training/inference.
 - Explore teacher-student or inpainting strategies to enhance robustness to missing data, especially during clouds or sensor gaps.
 - Consider generating per-year or per-season embeddings to align with how AlphaEarth offers annual snapshots.
 
 ---
 
-### Summary
 
-- You now have a fully formatted `README.md` you can copy directly into your project.
-- The comparison with AlphaEarth Foundations reveals strong conceptual alignment and offers ideas to elevate your pipeline’s robustness, efficiency, and versatility.
