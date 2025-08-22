@@ -1,13 +1,13 @@
 # Spatio-Temporal Crop Modeling Project
 
 This README provides a **living roadmap** for building a deep learning model using satellite imagery for crop classification and monitoring.  
-Progress through **phases**, mark off **checkpoints**, and choose from **alternative forks** when you hit decision points.
+Progress through **phases**, mark off **checkpoints**, and choose from **alternative forks** when we hit decision points.
 
 ---
 
 ## Phase 1: Foundation & Data Acquisition
 
-**Goal: Prepare your environment, data pipeline, and ground truth.**
+**Goal: Prepare  environment, data pipeline, and ground truth.**
 
 ### Checkpoints
 - [ ] Provision cloud compute (GPU-enabled instance) and set up storage bucket.
@@ -24,7 +24,7 @@ Progress through **phases**, mark off **checkpoints**, and choose from **alterna
 - **Fork 1 (Recommended):** Use a hosted data platform.
   - Microsoft Planetary Computer → direct access to Sentinel/Landsat archives.
   - Google Earth Engine → scalable queries and data retrieval.
-- **Fork 2 (Manual):** Build your own download pipeline.
+- **Fork 2 (Manual):** Build our own download pipeline.
   - Use tools like `sentinelsat` or Landsat APIs to fetch raw granules.
   - Build robust retry logic and processing error handling.
 - **Fork 2 (Manual):** Satellite Fetcher
