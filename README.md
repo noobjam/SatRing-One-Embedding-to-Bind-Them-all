@@ -50,7 +50,7 @@ Progress through **phases**, mark off **checkpoints**, and choose from **alterna
 
 ### DataLoader Details
 - Input: `field_id`
-- Handles:
+- Handles:..
   - Irregular acquisition dates.
   - Multi-modality imagery (SAR, optical, etc.)
 - Output sequences of `(image, date, modality)` tuples.
