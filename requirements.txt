@@ -1,0 +1,12 @@
+torch
+torchvision
+timm
+einops
+torchgeo
+rasterio
+geopandas
+scikit-learn
+pyproj
+fiona
+pyyaml  # For configs
+pytest  # For tests
