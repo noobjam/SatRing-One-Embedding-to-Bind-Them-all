@@ -1,6 +1,20 @@
 from src.preprocess import Preprocess
+from src.dataset import Dataset
 
 preprocessor = Preprocess(raw_data_path='./data/raw', processed_data_path='./data/processed')
-preprocessor.preprocess_s2()
-# meta =preprocessor._get_metadata('data/raw/S2/S2A_MSIL2A_20240808T021341_N0511_R060_T51PZL_20240808T081405.SAFE/GRANULE/L2A_T51PZL_A047676_20240808T021344/IMG_DATA/R10m/T51PZL_20240808T021341_B02_10m.jp2')
-# print(meta)
+# preprocessor.preprocess_s1()
+preprocessor.preprocess_l8_9()
+# preprocessor.run()
+dataset_L8_9 = Dataset(processed_data='./data/processed', sensor_type='L8_9')
+# dataset_s2 = Dataset(processed_data='./data/processed', sensor_type='S2')
+dataset_L8_9.create_pactches()
+# dataset_s2.create_pactches()
+
+
+# for i in range(len(dataset_L8_9)):
+#     data = dataset_L8_9[i]
+#     print(f"L8 Data {i} shape: {data.shape}")
+
+# for i in range(len(dataset_s2)):
+#     data = dataset_s2[i]
+#     print(f"S2 Data {i} shape: {data.shape}")

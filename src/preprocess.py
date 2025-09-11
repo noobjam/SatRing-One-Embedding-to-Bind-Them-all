@@ -25,6 +25,10 @@ from typing import List, Sequence
 import numpy as np
 import rasterio
 
+target_bands = {'10m': ['B02','B03','B04','B08'],
+            '20m': ['B01','B05','B06','B07','B8A','B11','B12','SCL'],
+            '60m': ['B09']}
+
 
 class Preprocess:
     def __init__(self, raw_data_path, processed_data_path):
@@ -37,7 +41,7 @@ class Preprocess:
         for child in self.raw_data_path.iterdir():
             if child.is_dir() and child.name.startswith(sensor_type):
                 for safe_file in child.iterdir():
-                    if safe_file.suffix == '.SAFE' and safe_file.is_dir():
+                    if safe_file.is_dir():
                         products.append(safe_file)
 
                 
@@ -72,10 +76,13 @@ class Preprocess:
             # Simple resize to reference dimensions( cuz _get_metadata shows :
             """:{'crs': None, 'transform': Affine(1.0, 0.0, 0.0,
                 0.0, 1.0, 0.0), 'width': 488, 'height': 486, 'dtype': 'uint16', 'count': 1} )"""
+            #print min and max for each band for debugging
+            # print(src.meta)
             data = src.read(
                 out_shape=(src.count, ref_height, ref_width),
                 resampling=getattr(rasterio.enums.Resampling, resampling_method)
             )
+            
             
             return data, None, None, src.dtypes[0]
             
@@ -94,11 +101,11 @@ class Preprocess:
 
 
     def preprocess_s2(self):
-        target_bands = {'10m': ['B02','B03','B04','B08'],
-                 '20m': ['B01','B05','B06','B07','B8A','B11','B12','SCL'],
-                 '60m': ['B09']}
+
         # product-type: S2MSL2A
         # resample , stack: [B01,B02,B03,B04,B05,B06,B07,B08,B8A,B09,B11,B12,SCL] ---> (H,W,13)
+        products = self._discover_products('S2')
+        reference_band = self._find_band_file(products[0], subdir_filter='IMG_DATA/R10m/')[0]
         for product in self._discover_products('S2'):
             bands_10m= self._find_band_file(product, subdir_filter='IMG_DATA/R10m/')
             bands_20m= self._find_band_file(product, subdir_filter='IMG_DATA/R20m/')
@@ -122,9 +129,7 @@ class Preprocess:
                         selected_bands.append(bfile)
             sorted_bands = sorted(selected_bands, key=lambda x: x.name)
             selected_bands = sorted_bands
-            print(f"Selected bands for {product.name}: {[b.name for b in selected_bands]}")
-            # resample all bands to 10 m (normal bands with bicubic, SCL with nearest) using rasterio
-            # stack bands into a single array (H,W,14)
+
 
 
             for i, band in enumerate(selected_bands):
@@ -133,38 +138,121 @@ class Preprocess:
                 else:
                     resampling_method = 'cubic'
 
-                reference_band=bands_10m[0]
-                data, _, _, _ = self._resample_band(band, reference_band_path=reference_band, resampling_method=resampling_method)
-                print(f"Resampled {band.name} to 10m with shape {data.shape}")
+                # reference_band = bands_10m[0]
+                data, _, _, _ = self._resample_band(
+                    band,
+                    reference_band_path=reference_band,
+                    resampling_method=resampling_method
+                )
+
+                # scale to float32 if not SCL
+                if 'SCL' in band.name:
+                    data = data.astype(np.uint8)
+
+                else:
+                    data = data.astype(np.float32) / 10000.0
+
                 if i == 0:
-                    stacked_data = data # (1,H,W)
-                else: 
-                    stacked_data = np.vstack((stacked_data, data)) # (N,H,W)
+                    stacked_data = data
+                else:
+                    stacked_data = np.vstack((stacked_data, data))
             #transpose to (H,W,C)
             stacked_data = np.transpose(stacked_data, (1, 2, 0))  # (H,W,C)
-            print(f"Processed {product.name}, stacked shape: {stacked_data.shape}")
+            # print(f"Processed {product.name}, stacked shape: {stacked_data.shape}")
             # Save the stacked array as a .npy file (maybe change this to tif, Hamza'z input required, npy easier for torch's from_numpy but no geo metadata)
-            output_file = Path(self.processed_data_path) / f"{product.name}_stacked.npy"
+            # save in subdir S2 in processed_data_path
+            os.makedirs(Path(self.processed_data_path)  /"S2"/ product.name, exist_ok=True)
+            output_file = Path(self.processed_data_path) / "S2" /product.name /f"{product.name}.npy"
             np.save(output_file, stacked_data)
 
 
-                
     def preprocess_s1(self):
         # product-type: GRD
-        # resample , stack: [VV,VH] ---> (H,W,2)
-        for file in self._discover_files('S1'):
-            print(f"Processing {file}...")
+        #  stack: [VV,VH] ---> (H,W,2)
+        # for file in self._discover_products('S1'):
+        #     print(f"Processing {file}...")
+        #     # crop to aoi from a .wkt file
         pass
+
+
+
+
+
+            
+             
+
+            
+            
+  
+
+
+
+            # log bands shape
+            # only stack no resampling
+
+
+            #transpose to (H,W,C)
+
+
+
+
+
+
+
 
     def preprocess_l8_9(self):
         # product-type: XL2SR 
         #resample , stack: [SR_B1,SR_B2,SR_B3,SR_B4,SR_B5,SR_B6,SR_B7,QA_PIXEL] ---> (H,W,8)
-        for file in self._discover_files('L8_9'):
-            print(f"Processing {file}...")
+        target_bands = ['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B6','SR_B7','QA_PIXEL']
 
-        pass
+        for product in self._discover_products('L8_9'):
+            print(f"Processing {product}...")
+            #find band files in file
+            band_files = self._find_band_file(product=product, subdir_filter='', extensions=('.tif', '.tiff', '.TIF', '.TIFF'))
+
+            elected_bands = [] 
+            for band in target_bands:
+                for bfile in band_files:
+                    if band in bfile.name:
+                        elected_bands.append(bfile)
+                        break
+
+            print(f"Selected bands for {product.name}: {[b.name for b in elected_bands]}")
+            #stack bands into a single array (H,W,8)
+            s2_products = self._discover_products('S2')[0]
+            reference_band= self._find_band_file(s2_products, subdir_filter='IMG_DATA/R10m/')[0]
+            
+            for i, band in enumerate(elected_bands):
+                
+
+                data, _, _, _ = self._resample_band(
+                    band,
+                    reference_band_path=reference_band,  # just to get metadata
+                    resampling_method='cubic'
+                )
+
+                # scale to float32 if not QA_PIXEL
+                if 'QA_PIXEL' in band.name:
+                    data = data.astype(np.uint8)
+                else:
+                    data = data.astype(np.float32) / 27500.0 - 0.2  # L8/9 SR scaling
+
+                if i == 0:
+                    stacked_data = data
+                else:
+                    stacked_data = np.vstack((stacked_data, data))
+            #transpose to (H,W,C)
+            stacked_data = np.transpose(stacked_data, (1, 2, 0))  # (H,W,C)
+            print(f"Processed {product.name}, stacked shape: {stacked_data.shape}")
+            # save in subdir L8_9 in processed_data_path
+            os.makedirs(Path(self.processed_data_path) /"L8_9"/ product.name, exist_ok=True)
+            output_file = Path(self.processed_data_path) /"L8_9" /  product.name/f"{product.name}.npy"
+            np.save(output_file, stacked_data)
+
+
+
 
     def run(self):
         self.preprocess_s2()
-        self.preprocess_s1()
+        # self.preprocess_s1()
         self.preprocess_l8_9()
