@@ -1,22 +1,44 @@
-from .encoder_base import EncoderBase
+import torch
 import torch.nn as nn
-import torchvision
+from encoder_base import EncoderBase
+from torchgeo.models import (
+    DOFALarge16_Weights,
+    ResNet50_Weights,
+    dofa_large_patch16_224,
+    resnet50,
+)
 
-class L8_9_Encoder(EncoderBase):
-    def __init__(self, embed_dim: int = 256, backbone_type: str = 'resnet18', **backbone_kwargs):
-        super().__init__(embed_dim)
-        self.in_channels = 11  # Landsat 8/9 has 11 bands
 
-        if 'resnet' in backbone_type.lower():
-            import torchvision.models as models
-            backbone = getattr(models, backbone_type)(weights=None, **backbone_kwargs)
-            backbone.conv1 = nn.Conv2d(self.in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-            backbone.fc = nn.Linear(backbone.fc.in_features, embed_dim)
-            self.encoder = backbone
-        else:
-            import timm
-            self.encoder = timm.create_model(backbone_type, pretrained=False, in_chans=self.in_channels,
-                                             num_classes=embed_dim, **backbone_kwargs)
+class EncoderL8(EncoderBase, nn.Module):
+    def __init__(self, in_channels: int = 7, backbone="resnet50"):
+        super().__init__(in_channels=in_channels)
+        self.in_channels = in_channels
+        self.backbone = backbone
+        self.encoder = self._create_encoder()
 
-    def forward(self, x):
-        return self.encoder(x)
+        # Landsat 8/9 L2SP wavelengths - 7 optical bands (in micrometers)
+        self.wavelengths = [
+            0.44,
+            0.48,
+            0.56,
+            0.655,
+            0.865,
+            1.61,
+            2.20,
+        ]
+
+    def _create_encoder(self):
+        weights = DOFALarge16_Weights.DOFA_MAE
+        model = dofa_large_patch16_224(weights=weights)
+
+        # Remove only the final classification head
+        if hasattr(model, "head"):
+            model.head = nn.Identity()
+        elif hasattr(model, "fc"):
+            model.fc = nn.Identity()
+
+        return model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.encoder(x, self.wavelengths)  # [B, 1024]
+        return x

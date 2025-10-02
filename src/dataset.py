@@ -28,7 +28,7 @@ class Dataset(Dataset):
                 os.makedirs(Path(self.processed_data) /self.sensor_type/ file_name.replace('.npy','')/ "patches" , exist_ok=True)
 
 
-                # assuming data is a numpy array of shape (H, W, C)
+                #  data is a numpy array of shape (H, W, C)
                 H, W, C = data.shape
                 for i in range(0, H - patch_size + 1, stride):
                     for j in range(0, W - patch_size + 1, stride):
@@ -61,8 +61,10 @@ class Dataset(Dataset):
                         patch_file = Path(self.processed_data)/self.sensor_type/file_name.replace('.npy','') / "patches" / f"patch_{frames}_{i}_{j}.npy"
                         np.save(patch_file, patch)
 
-
-
+    def get_patches(self):
+        # access product , find patches folder, return patches
+        
+        pass
 
     def __len__(self):
         return len(self.invetory)       
