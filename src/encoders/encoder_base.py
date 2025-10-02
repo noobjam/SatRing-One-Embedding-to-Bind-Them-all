@@ -1,36 +1,17 @@
-import torch
-import torch.nn as nn
 from abc import ABC, abstractmethod
 
+import torch
+import torch.nn as nn
+import torchvision.models as models
 
-class EncoderBase(nn.Module, ABC):
-    """
-    Base class for modality encoders that output an embedding vector in a shared latent space.
-    Subclasses must implement forward(x) and return a tensor of shape (B, embed_dim).
 
-    This base also provides an encode() helper that optionally L2-normalizes embeddings,
-    which is commonly required for contrastive losses (InfoNCE).
-    """
-    def __init__(self, embed_dim: int = 256, normalize: bool = True):
+class EncoderBase(ABC):
+    def __init__(self, in_channels: int, backbone: str = "resnet50"):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.normalize = normalize
+        self.in_channels = in_channels
+        self.backbone = backbone
+        self.encoder = self._create_encoder()
 
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor of shape (B, C, H, W)
-        Returns:
-            Tensor of shape (B, embed_dim)
-        """
-        raise NotImplementedError
-
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Runs forward and applies optional L2 normalization.
-        """
-        z = self.forward(x)
-        if self.normalize:
-            z = nn.functional.normalize(z, dim=-1)
-        return z
+    def _create_encoder(self):
+        pass

@@ -115,6 +115,8 @@ mlruns/
 wandb/
 tensorboard/
 tb_logs/
+src/encoders/__pycache__/
+src/encoders/test_data/
 
 # Model files and large ML artifacts
 *.pt
