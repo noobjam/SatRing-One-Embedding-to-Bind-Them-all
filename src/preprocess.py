@@ -14,7 +14,8 @@
 #     └── ...
 
 
-# TODO: before stacking, for S2 bands(~SCL)/=10000
+#TODO: add preprocess fusion products
+
 
 import glob
 import os
@@ -261,6 +262,95 @@ class Preprocess:
                 / f"{product.name}.npy"
             )
             np.save(output_file, stacked_data)
+
+
+
+    def preprocess_fusion(self,product_type:str):
+        #need to consider 2 cases: 1-data after mosaic process (resampling stacking already done) -2 raw sen2like data
+        if product_type == 'raw':
+            products_s2 = self._discover_products("S2")
+            products_ls8_9 = self._discover_products("L8_9")
+            products = products_s2 + products_ls8_9
+            target_bands = ['B01','B02','B03','B04','B8A','B11','B12']
+            #reference band is B04 of a product in products
+            for product in products:
+                bands = self._find_band_file(products[0], subdir_filter="IMG_DATA/")
+                reference_band = next((b for b in bands if 'B04' in b.name), None)
+                #resample to reference band and stack only target bands
+                selected_bands = []
+                for band in target_bands:
+                    for bfile in bands:
+                        if band in bfile.name:
+                            selected_bands.append(bfile)
+                sorted_bands = sorted(selected_bands, key=lambda x: x.name)
+                selected_bands = sorted_bands
+                for i, band in enumerate(selected_bands):
+                    if "SCL" or "OMN" in band.name:
+                        resampling_method = "nearest"
+                    else:
+                        resampling_method = "cubic"
+
+                    data, _, _, _ = self._resample_band(
+                        band,
+                        reference_band_path=reference_band,
+                        resampling_method=resampling_method,
+                    )
+
+                    # scale to float32 if not SCL
+                    if "SCL" in band.name:
+                        data = data.astype(np.uint8)
+
+                    else:
+                        data = data.astype(np.float32) / 10000.0
+
+                    if i == 0:
+                        stacked_data = data
+                    else:
+                        stacked_data = np.vstack((stacked_data, data))
+                # transpose to (H,W,C)
+                stacked_data = np.transpose(stacked_data, (1, 2, 0))  # (H,W,C)
+                # print(f"Processed {product.name}, stacked shape: {stacked_data.shape}")
+                # save in subdir fusion in processed_data_path
+                os.makedirs(
+                    Path(self.processed_data_path) / "fusion" / product.name, exist_ok=True
+                )
+                output_file = (
+                    Path(self.processed_data_path)
+                    / "fusion"
+                    / product.name
+                    / f"{product.name}.npy"
+                )
+                np.save(output_file, stacked_data)
+        elif product_type == 'mosaic':
+            #bands are already resampled and stacked in a single file per product .TIF --> save as .npy
+            for product in self._discover_products("stacked_fusion"):
+                with rasterio.open(product) as src:
+                    data = src.read()
+                    data = np.transpose(data, (1, 2, 0))  # (H,W,C)
+                    # print min and max for each band for debugging
+                    # print(f"Processed {product.name}, stacked shape: {data.shape}")
+                    # save in subdir fusion in processed_data_path
+                    os.makedirs(
+                        Path(self.processed_data_path) / "fusion" / product.name, exist_ok=True
+                    )
+                    output_file = (
+                        Path(self.processed_data_path)
+                        / "fusion"
+                        / product.name
+                        / f"{product.name}.npy"
+                    )
+                    np.save(output_file, data)
+
+                
+
+        
+
+
+        
+
+
+
+        pass
 
     def run(self):
         self.preprocess_s2()
