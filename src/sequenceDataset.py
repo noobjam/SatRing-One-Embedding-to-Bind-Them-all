@@ -65,15 +65,58 @@ class SequenceDataset(Dataset):
         sensor, frame, i, j = name.split('_')
         return int(frame), sensor, filepath
 
+    # def sample_positive_pair(self, loc, sensors):
+    #     frames_sensors_files = self.location_map[loc]
+    #     # Same location, different time
+    #     seq = random.sample(frames_sensors_files, self.sequence_length)
+    #     seq_data = [np.load(f) for _, _, f in seq]
+    #     seq_tensor = torch.tensor(np.stack(seq_data, axis=0), dtype=torch.float32)
+    #     if self.augment:
+    #         seq_tensor = self._apply_augmentations(seq_tensor)
+    #     return seq_tensor
+
+
     def sample_positive_pair(self, loc, sensors):
         frames_sensors_files = self.location_map[loc]
-        # Same location, different time
-        seq = random.sample(frames_sensors_files, self.sequence_length)
-        seq_data = [np.load(f) for _, _, f in seq]
+
+        frame_map = defaultdict(list)
+        for frame, sensor, f in frames_sensors_files:
+            frame_map[frame].append((sensor, f))
+
+        if random.random() < 0.6:
+            #Same location , same time (approximatly within 3 days) different sensors
+            candidate_pairs = []
+            frames = sorted(frame_map.keys())
+            for i, frame_i in enumerate(frames):
+                for j, frame_j in enumerate(frames):
+                    if i >=j:
+                        continue
+                    if abs(frame_i - frame_j) <= 3:
+                        sensors_i = set(s for s, _ in frame_map[frame_i])
+                        sensors_j = set(s for s, _ in frame_map[frame_j])
+                        for s_i,f_i in frame_map[frame_i]:
+                            for s_j,f_j in frame_map[frame_j]:
+                                if s_i != s_j:
+                                    candidate_pairs.append((f_i, f_j))
+
+            if candidate_pairs:
+                seq_files = random.choice(candidate_pairs)
+            else:
+                seq_files = [f for _, _, f in random.sample(frames_sensors_files, self.sequence_length)
+                             ]
+        else:
+            # Same location, different time
+            seq_files = [f for _, _, f in random.sample(frames_sensors_files, self.sequence_length)
+                         ]
+            
+        seq_data = [np.load(f) for f in seq_files]
         seq_tensor = torch.tensor(np.stack(seq_data, axis=0), dtype=torch.float32)
         if self.augment:
             seq_tensor = self._apply_augmentations(seq_tensor)
         return seq_tensor
+
+
+
 
     def sample_negative_pair(self, anchor_loc):
         neg_loc = random.choice([l for l in self.locations if l != anchor_loc])
