@@ -14,7 +14,7 @@
 #     └── ...
 
 
-#TODO: add preprocess fusion products
+#TODO: Rafactor to work wirth mosaic pipeline output : Parquet files with stacked bands per tile
 
 
 import glob
@@ -34,9 +34,10 @@ target_bands = {
 
 
 class Preprocess:
-    def __init__(self, raw_data_path, processed_data_path):
+    def __init__(self, raw_data_path, processed_data_path,files_type:str = 'parquet'):
         self.raw_data_path = Path(raw_data_path)
         self.processed_data_path = processed_data_path
+        self.files_type = files_type
 
     def _discover_products(self, sensor_type: str):
         # Discover files based on sensor type (S2, S1, L8/9)
@@ -178,12 +179,28 @@ class Preprocess:
             )
             np.save(output_file, stacked_data)
 
+
+
+            """"
+            
+        base_path = self.path
+        measurements_dir = base_path / "measurements"
+        annaotation_dir = base_path / "annotation"
+        tiff_files = sorted(measurements_dir.glob("*.tiff"))
+        logger.info(f"found {len(tiff_files)} band files")
+        pol_files = {}
+        for tiff in tiff_files:
+            filename = tiff.stem.lower()
+            if 'vv' in filename:
+                pol_files['VV'] = tiff
+            elif 'vh' in filename:
+                pol_files['VH'] = tiff
+            """
+
     def preprocess_s1(self):
         # product-type: GRD
         #  stack: [VV,VH] ---> (H,W,2)
-        # for file in self._discover_products('S1'):
-        #     print(f"Processing {file}...")
-        #     # crop to aoi from a .wkt file
+
         pass
 
         # log bands shape
