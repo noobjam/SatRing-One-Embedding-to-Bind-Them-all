@@ -25,7 +25,24 @@ class TemporalAttentionBlock(nn.Module):
             x_out.append(token_seq.unsqueeze(2))  # (B,T,1,D)
         x_out = torch.cat(x_out, dim=2)  # (B,T,N
         return x_out
+    
 
+
+class TemporalSummerizer(nn.Module):
+    def __init__(self, dim,num_heads=8, num_summary_tokens = 196):
+        super().__init__()
+        self.summary_tokens = nn.Parameter(torch.randn(1,num_summary_tokens,dim))
+        self.attn = nn.MultiheadAttention(embed_dim=dim,num_heads=num_heads,batch_first=True)
+        self.norm = nn.LayerNorm(dim)
+
+
+    def forward(self,x):
+        B,T,N_minus_1,D = x.shape
+        kv = x.view(B, T*N_minus_1,D)
+        q = self.summary_tokens.expand(B,-1,-1)
+        summary_feat,_ = self.attn(q,kv,kv)
+        summary_feat = self.norm(summary_feat)
+        return summary_feat
 
 
 class ConvRefinedBlock(nn.Module):
@@ -95,49 +112,55 @@ class ConvDecoder(nn.Module):
 
 
 class TRACE(nn.Module):
-    def __init__(self, dim=1024, num_heads=8,temporal_depth=2,H=14,W=14,aggregate = 'mean',max_timesteps = 90,learned_emb = False):
+    def __init__(self, dim=1024, num_heads=8, temporal_depth=2, H=14, W=14, aggregate='summarizer', max_timesteps=90, learned_emb=False):
         super().__init__()
         self.temporal_blocks = nn.ModuleList([TemporalAttentionBlock(dim=dim, num_heads=num_heads) for _ in range(temporal_depth)])
-        self.conv_refine = ConvRefinedBlock(dim=dim,H=H,W=W)
+        self.conv_refine = ConvRefinedBlock(dim=dim, H=H, W=W)
         self.norm = nn.LayerNorm(dim)
         self.aggregate = aggregate
-
         self.learned_time_emb = learned_emb
-        if learned_emb:
-            self.time_emb = nn.Embedding(max_timesteps, dim)
-        else:
-            self.time_emb = SinTimeEmbeddings(dim)
+        if learned_emb: self.time_emb = nn.Embedding(max_timesteps, dim)
+        else: self.time_emb = SinTimeEmbeddings(dim)
 
+        if self.aggregate == 'summarizer':
+            num_summary_tokens = H * W
+            self.summarizer = TemporalSummerizer(dim=dim, num_heads=num_heads, num_summary_tokens=num_summary_tokens)
 
         self.decoder = ConvDecoder(in_dim=dim, out_dim=64, H=H, W=W, upsample_factor=16)
-        
 
-    
-    def forward(self, x, timesteps):
-        B,T,N,D = x.shape 
-
-         #add temporal embeddings
+    def forward(self, x, timesteps=None, return_type='summary_pixel'):
+        B, T, N, D = x.shape
         if timesteps is None:
-                timesteps = torch.arange(T, device=x.device).unsqueeze(0).repeat(B,1)  # [B,T]
-        t_emb = self.time_emb(timesteps)  # [B,T,D]
-        x = x + t_emb.unsqueeze(2)  # [B,T,N,D]
+            timesteps = torch.arange(T, device=x.device).unsqueeze(0).repeat(B, 1)
+        t_emb = self.time_emb(timesteps)
+        x = x + t_emb.unsqueeze(2)
+        for block in self.temporal_blocks: x = block(x)
+        x_conv = self.conv_refine(x)
+        x_processed = x[:, :, 1:, :] + x_conv
+        x_processed = self.norm(x_processed) # Shape: [B, T, N-1, D]
 
-        #temporal attention blocks
-        for block in self.temporal_blocks:
-            x = block(x)  # [B,T,N,D]
+        # --- BRANCHING LOGIC FOR INFERENCE ---
+        if return_type == 'summary_pixel' or return_type == 'summary_global':
+            # This path produces both summary types
+            if self.aggregate == 'mean': x_feat = x_processed.mean(dim=1)
+            elif self.aggregate == 'last': x_feat = x_processed[:, -1, :, :]
+            elif self.aggregate == 'summarizer': x_feat = self.summarizer(x_processed)
+            else: raise ValueError(f"Unknown aggregation type: {self.aggregate}")
+            
+            if return_type == 'summary_global':
+                return x_feat.mean(dim=1) # [B, D]
+            else: # summary_pixel
+                return self.decoder(x_feat) # [B, C, H, W]
 
-        #conv refine block
-        x_conv = self.conv_refine(x)  # [B,T,N-1,D]
-        x = x[:,:,1:,:] + x_conv  # skip connection, remove cls token [B,T,N-1,D]
-        x = self.norm(x[:,:,-1,:,:])  # [B,T,N-1,D]
-        if self.aggregate == 'mean':
-            x_feat = x.mean(dim=1)
-        elif self.aggregate == 'last':
-            x_feat = x[:,-1,:,:]
+        elif return_type == 'per_frame_pixel':
+            x_per_frame = x_processed.view(B * T, N - 1, D)
+            pixel_emb_per_frame = self.decoder(x_per_frame)
+            _, C, H, W = pixel_emb_per_frame.shape
+            return pixel_emb_per_frame.view(B, T, C, H, W)
+
         else:
-            x_feat = x
-        pixel_emb = self.decoder(x_feat)  # [B, out_dim, H*upsample_factor, W*upsample_factor]
-        return pixel_emb #[B, 64, 224, 224]
+            raise ValueError(f"Unknown return_type: {return_type}")
+
         
 
 # B, T, N, D = 10, 5, 197, 1024
@@ -145,5 +168,6 @@ class TRACE(nn.Module):
 # timesteps = torch.arange(T).unsqueeze(0).expand(B, -1)
 # model = TRACE(dim=1024, num_heads=8, temporal_depth=2, learned_time_emb=False)
 # out = model(x, timesteps) # [B, N, D]
+
 
 

@@ -8,7 +8,7 @@ from torchgeo.models import (
 )
 
 
-class EncoderL8(EncoderBase, nn.Module):
+class EncoderLs(EncoderBase, nn.Module):
     def __init__(self, in_channels: int = 7):
         super().__init__(in_channels=in_channels)
         self.in_channels = in_channels
