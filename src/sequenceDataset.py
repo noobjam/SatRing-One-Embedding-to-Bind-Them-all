@@ -14,6 +14,20 @@ class SequenceDataset(Dataset):
         self._load_files()
         self.sequences = self._create_sequences()
         self.locations = list(self.location_map.keys())
+        
+        # Load OSM cache if available
+        self.osm_cache = {}
+        osm_cache_path = Path(processed_data).parent / 'osm_cache_rwanda.pkl'
+        if osm_cache_path.exists():
+            import pickle
+            with open(osm_cache_path, 'rb') as f:
+                self.osm_cache = pickle.load(f)
+            print(f"✓ Loaded OSM cache with {len(self.osm_cache)} locations")
+            num_with_tags = sum(1 for v in self.osm_cache.values() if v > 0)
+            print(f"  {num_with_tags} locations have OSM tags")
+        else:
+            print(f"⚠ Warning: OSM cache not found at {osm_cache_path}")
+            print(f"  L_semantic will be 0. Run 'python scripts/cache_osm_rwanda.py' to fix.")
 
     def _load_files(self):
         for product in self.processed_data.iterdir():
@@ -41,90 +55,90 @@ class SequenceDataset(Dataset):
         return len(self.sequences)
 
     def __getitem__(self, idx):
-        anchor, anchor_loc, anchor_sensors = self._get_anchor_sequence(idx)
-        if random.random() < 0.5:
-            # Positive pair
-            pair = self.sample_positive_pair(anchor_loc, anchor_sensors)
-            label = 1
-        else:
-            # Negative pair
-            pair = self.sample_negative_pair(anchor_loc)
-            label = 0
-        return anchor, pair, label
-
-    def _get_anchor_sequence(self, idx):
+        # Always return two views of the same location (Positive Pair for 'All')
+        # The loss function will decide if they are valid for 'Season' or 'Sensor' based on metadata.
+        
         loc, seq_files = self.sequences[idx]
+        
+        # View 1 (Anchor)
+        # We use the sequence defined in self.sequences
+        v1_tensor, v1_times, v1_sensors = self._load_sequence(seq_files)
+        
+        # View 2 (Positive)
+        # Sample another sequence from the SAME location
+        # It could be the same sequence (augmented), or a different time, or different sensor
+        v2_tensor, v2_times, v2_sensors = self._sample_positive_view(loc)
+        
+        # Extract OSM tag for this location
+        # For simplicity, we'll cache OSM tags by location
+        # In practice, you'd precompute this and store it
+        osm_tag = self._get_osm_tag(loc)
+        
+        return {
+            "v1_img": v1_tensor,
+            "v1_t": torch.tensor(v1_times, dtype=torch.long),
+            "v1_s": torch.tensor(v1_sensors, dtype=torch.long),
+            "v1_osm": osm_tag,  # NEW: OSM land use tag (int)
+            "v2_img": v2_tensor,
+            "v2_t": torch.tensor(v2_times, dtype=torch.long),
+            "v2_s": torch.tensor(v2_sensors, dtype=torch.long),
+            "v2_osm": osm_tag,  # NEW: Same location, so same OSM tag
+            "loc_idx": self.locations.index(loc) # Slow, but simple for now. Ideally pre-compute.
+        }
+
+    def _load_sequence(self, seq_files):
         frames_sensors_files = [self._get_frame_sensor(f) for f in seq_files]
         seq_data = [np.load(f) for _, _, f in frames_sensors_files]
         seq_tensor = torch.tensor(np.stack(seq_data, axis=0), dtype=torch.float32)
-        sensors = [s for _, s, _ in frames_sensors_files]
-        return seq_tensor, loc, sensors
+        
+        times = [frame for frame, _, _ in frames_sensors_files]
+        sensors = [0 if s == 'S2' else 1 for _, s, _ in frames_sensors_files] # Simple mapping
+        
+        if self.augment:
+            seq_tensor = self._apply_augmentations(seq_tensor)
+            
+        return seq_tensor, times, sensors
+
+    def _sample_positive_view(self, loc):
+        frames_sensors_files = self.location_map[loc]
+        
+        # Randomly sample a sequence of length sequence_length
+        if len(frames_sensors_files) >= self.sequence_length:
+            seq_files_tuple = random.sample(frames_sensors_files, self.sequence_length)
+            # Sort by time to be consistent
+            seq_files_tuple.sort(key=lambda x: x[0])
+            seq_files = [f for _, _, f in seq_files_tuple]
+        else:
+            # If not enough frames, duplicate (should not happen if init is correct)
+            seq_files = [f for _, _, f in frames_sensors_files] * self.sequence_length
+            seq_files = seq_files[:self.sequence_length]
+            
+        return self._load_sequence(seq_files)
 
     def _get_frame_sensor(self, filepath):
         name = Path(filepath).stem
-        sensor, frame, i, j = name.split('_')
-        return int(frame), sensor, filepath
-
-    # def sample_positive_pair(self, loc, sensors):
-    #     frames_sensors_files = self.location_map[loc]
-    #     # Same location, different time
-    #     seq = random.sample(frames_sensors_files, self.sequence_length)
-    #     seq_data = [np.load(f) for _, _, f in seq]
-    #     seq_tensor = torch.tensor(np.stack(seq_data, axis=0), dtype=torch.float32)
-    #     if self.augment:
-    #         seq_tensor = self._apply_augmentations(seq_tensor)
-    #     return seq_tensor
-
-
-    def sample_positive_pair(self, loc, sensors):
-        frames_sensors_files = self.location_map[loc]
-
-        frame_map = defaultdict(list)
-        for frame, sensor, f in frames_sensors_files:
-            frame_map[frame].append((sensor, f))
-
-        if random.random() < 0.6:
-            #Same location , same time (approximatly within 3 days) different sensors
-            candidate_pairs = []
-            frames = sorted(frame_map.keys())
-            for i, frame_i in enumerate(frames):
-                for j, frame_j in enumerate(frames):
-                    if i >=j:
-                        continue
-                    if abs(frame_i - frame_j) <= 3:
-                        sensors_i = set(s for s, _ in frame_map[frame_i])
-                        sensors_j = set(s for s, _ in frame_map[frame_j])
-                        for s_i,f_i in frame_map[frame_i]:
-                            for s_j,f_j in frame_map[frame_j]:
-                                if s_i != s_j:
-                                    candidate_pairs.append((f_i, f_j))
-
-            if candidate_pairs:
-                seq_files = random.choice(candidate_pairs)
-            else:
-                seq_files = [f for _, _, f in random.sample(frames_sensors_files, self.sequence_length)
-                             ]
+        parts = name.split('_')
+        # Expecting: sensor_frame_i_j
+        # But sometimes might vary.
+        if len(parts) >= 4:
+            sensor = parts[0]
+            frame = int(parts[1])
+            return frame, sensor, filepath
         else:
-            # Same location, different time
-            seq_files = [f for _, _, f in random.sample(frames_sensors_files, self.sequence_length)
-                         ]
-            
-        seq_data = [np.load(f) for f in seq_files]
-        seq_tensor = torch.tensor(np.stack(seq_data, axis=0), dtype=torch.float32)
-        if self.augment:
-            seq_tensor = self._apply_augmentations(seq_tensor)
-        return seq_tensor
-
-
-
-
-    def sample_negative_pair(self, anchor_loc):
-        neg_loc = random.choice([l for l in self.locations if l != anchor_loc])
-        frames_sensors_files = self.location_map[neg_loc]
-        seq = random.sample(frames_sensors_files, self.sequence_length)
-        seq_data = [np.load(f) for _, _, f in seq]
-        seq_tensor = torch.tensor(np.stack(seq_data, axis=0), dtype=torch.float32)
-        return seq_tensor
+            # Fallback
+            return 0, 'unknown', filepath
+    
+    def _get_osm_tag(self, loc):
+        """
+        Get OSM land use tag for a location from cached OSM data.
+        
+        Args:
+            loc: Location tuple (i, j) or string
+        
+        Returns:
+            int: OSM tag (0=unknown, 1=forest, 2=farmland, etc.)
+        """
+        return self.osm_cache.get(loc, 0)
 
     def _apply_augmentations(self, tensor):
         # Random flip

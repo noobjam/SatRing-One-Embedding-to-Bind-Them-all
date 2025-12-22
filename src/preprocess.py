@@ -1,375 +1,222 @@
-# Assume we have S2 , S1 and L8/9 data downloaded and unzipped in the following structure:
-# data/raw/
-# ├── S2
-# │   ├── S2A_MSIL1C_20220101T000000_N0209_R000_T00XXX_20220101T000000.SAFE
-# │   ├── S2B_MSIL1C_20220101T000000_N0209_R000_T00XXX_20220101T000000.SAFE
-# │   └── ...
-# ├── S1
-# │   ├── S1A_IW_GRDH_1SDV_20220101T000000_20220101T000000_000000_000000_000000.zip
-# │   ├── S1B_IW_GRDH_1SDV_20220101T000000_20220101T000000_000000_000000_000000.zip
-# │   └── ...
-# └── L8_9
-#     ├── LC08_L1TP_000000_20220101_20220101_01_T1.tar.gz
-#     ├── LC09_L1TP_000000_20220101_20220101_01_T1.tar.gz
-#     └── ...
-
-
-#TODO: Rafactor to work wirth mosaic pipeline output : Parquet files with stacked bands per tile
-
-
-import glob
 import os
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Sequence
+from typing import Dict, List, Tuple
 
-# import rasterio
 import numpy as np
+import polars as pl
 import rasterio
+from tqdm import tqdm
 
-target_bands = {
-    "10m": ["B02", "B03", "B04", "B08"],
-    "20m": ["B01", "B05", "B06", "B07", "B8A", "B11", "B12", "SCL"],
-    "60m": ["B09"],
-}
+from config import config
+from utils import finders, raster_helpers
 
 
-class Preprocess:
-    def __init__(self, raw_data_path, processed_data_path,files_type:str = 'parquet'):
-        self.raw_data_path = Path(raw_data_path)
+class BaseProductHandler(ABC):
+    def __init__(self, raw_data_path: Path, processed_data_path: Path):
+        self.raw_data_path = raw_data_path
         self.processed_data_path = processed_data_path
-        self.files_type = files_type
 
-    def _discover_products(self, sensor_type: str):
-        # Discover files based on sensor type (S2, S1, L8/9)
-        products: List[Path] = []
-        for child in self.raw_data_path.iterdir():
-            if child.is_dir() and child.name.startswith(sensor_type):
-                for safe_file in child.iterdir():
-                    if safe_file.is_dir():
-                        products.append(safe_file)
-
-        products.sort()
-        return products
-
-    def _find_band_file(
-        self,
-        product,
-        subdir_filter: str = "IMG_DATA/",
-        extensions: Sequence = (".tif", ".jp2", ".tiff"),
-    ):
-
-        files = []
-
-        for p in product.rglob("*"):
-            if not p.is_file():
-                continue
-            if p.suffix.lower() not in [ext.lower() for ext in extensions]:
-                continue
-            if subdir_filter and subdir_filter not in str(p):
-                continue
-
-            files.append(p)
-
-        return files
-
-    def _resample_band(
-        self,
-        band_path: Path,
-        reference_band_path: Path,
-        resampling_method: str = "cubic",
-    ):
-
-        with rasterio.open(reference_band_path) as ref_src:
-            ref_height, ref_width = ref_src.height, ref_src.width
-
-        with rasterio.open(band_path) as src:
-            # Simple resize to reference dimensions( cuz _get_metadata shows :
-            """:{'crs': None, 'transform': Affine(1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0), 'width': 488, 'height': 486, 'dtype': 'uint16', 'count': 1} )
-            """
-            # print min and max for each band for debugging
-            # print(src.meta)
-            data = src.read(
-                out_shape=(src.count, ref_height, ref_width),
-                resampling=getattr(rasterio.enums.Resampling, resampling_method),
-            )
-
-            return data, None, None, src.dtypes[0]
-
-    def _get_metadata(self, band_path: Path):
-
-        with rasterio.open(band_path) as src:
-            return {
-                "crs": src.crs,
-                "transform": src.transform,
-                "width": src.width,
-                "height": src.height,
-                "dtype": src.dtypes[0],
-                "count": src.count,
-            }
-
-    def preprocess_s2(self):
-
-        # product-type: S2MSL2A
-        # resample , stack: [B01,B02,B03,B04,B05,B06,B07,B08,B8A,B09,B11,B12,SCL] ---> (H,W,13)
-        products = self._discover_products("S2")
-        reference_band = self._find_band_file(
-            products[0], subdir_filter="IMG_DATA/R10m/"
-        )[0]
-        for product in self._discover_products("S2"):
-            bands_10m = self._find_band_file(product, subdir_filter="IMG_DATA/R10m/")
-            bands_20m = self._find_band_file(product, subdir_filter="IMG_DATA/R20m/")
-            bands_60m = self._find_band_file(product, subdir_filter="IMG_DATA/R60m/")
-
-            # group target bands starting from 10m, if same band found in multiple resolutions, prefer higher resolution
-            selected_bands = []
-            for band in target_bands["10m"]:
-                for bfile in bands_10m:
-                    if band in bfile.name:
-                        selected_bands.append(bfile)
-
-            for band in target_bands["20m"]:
-                for bfile in bands_20m:
-                    if band in bfile.name:
-                        selected_bands.append(bfile)
-            for band in target_bands["60m"]:
-                for bfile in bands_60m:
-                    if band in bfile.name:
-                        selected_bands.append(bfile)
-            sorted_bands = sorted(selected_bands, key=lambda x: x.name)
-            selected_bands = sorted_bands
-
-            for i, band in enumerate(selected_bands):
-                if "SCL" in band.name:
-                    resampling_method = "nearest"
-                else:
-                    resampling_method = "cubic"
-
-                # reference_band = bands_10m[0]
-                data, _, _, _ = self._resample_band(
-                    band,
-                    reference_band_path=reference_band,
-                    resampling_method=resampling_method,
-                )
-
-                # scale to float32 if not SCL
-                if "SCL" in band.name:
-                    data = data.astype(np.uint8)
-
-                else:
-                    data = data.astype(np.float32) / 10000.0
-
-                if i == 0:
-                    stacked_data = data
-                else:
-                    stacked_data = np.vstack((stacked_data, data))
-            # transpose to (H,W,C)
-            stacked_data = np.transpose(stacked_data, (1, 2, 0))  # (H,W,C)
-            # print(f"Processed {product.name}, stacked shape: {stacked_data.shape}")
-            # Save the stacked array as a .npy file (maybe change this to tif, Hamza'z input required, npy easier for torch's from_numpy but no geo metadata)
-            # save in subdir S2 in processed_data_path
-            os.makedirs(
-                Path(self.processed_data_path) / "S2" / product.name, exist_ok=True
-            )
-            output_file = (
-                Path(self.processed_data_path)
-                / "S2"
-                / product.name
-                / f"{product.name}.npy"
-            )
-            np.save(output_file, stacked_data)
-
-
-
-            """"
-            
-        base_path = self.path
-        measurements_dir = base_path / "measurements"
-        annaotation_dir = base_path / "annotation"
-        tiff_files = sorted(measurements_dir.glob("*.tiff"))
-        logger.info(f"found {len(tiff_files)} band files")
-        pol_files = {}
-        for tiff in tiff_files:
-            filename = tiff.stem.lower()
-            if 'vv' in filename:
-                pol_files['VV'] = tiff
-            elif 'vh' in filename:
-                pol_files['VH'] = tiff
-            """
-
-    def preprocess_s1(self):
-        # product-type: GRD
-        #  stack: [VV,VH] ---> (H,W,2)
-
+    @abstractmethod
+    def find_products(self) -> List[Path]:
         pass
 
-        # log bands shape
-        # only stack no resampling
+    @abstractmethod
+    def group_products(self, products: List[Path]) -> Dict:
+        pass
 
-        # transpose to (H,W,C)
+    @abstractmethod
+    def get_output_dir(self, date: str, *args) -> Path:
+        pass
 
-    def preprocess_l8_9(self):
-        # product-type: XL2SR
-        # resample , stack: [SR_B1,SR_B2,SR_B3,SR_B4,SR_B5,SR_B6,SR_B7,QA_PIXEL] ---> (H,W,8)
-        target_bands = [
-            "SR_B1",
-            "SR_B2",
-            "SR_B3",
-            "SR_B4",
-            "SR_B5",
-            "SR_B6",
-            "SR_B7",
-            "QA_PIXEL",
-        ]
-
-        for product in self._discover_products("L8_9"):
-            print(f"Processing {product}...")
-            # find band files in file
-            band_files = self._find_band_file(
-                product=product,
-                subdir_filter="",
-                extensions=(".tif", ".tiff", ".TIF", ".TIFF"),
-            )
-
-            elected_bands = []
-            for band in target_bands:
-                for bfile in band_files:
-                    if band in bfile.name:
-                        elected_bands.append(bfile)
-                        break
-
-            print(
-                f"Selected bands for {product.name}: {[b.name for b in elected_bands]}"
-            )
-            # stack bands into a single array (H,W,8)
-            s2_products = self._discover_products("S2")[0]
-            reference_band = self._find_band_file(
-                s2_products, subdir_filter="IMG_DATA/R10m/"
-            )[0]
-
-            for i, band in enumerate(elected_bands):
-
-                data, _, _, _ = self._resample_band(
-                    band,
-                    reference_band_path=reference_band,  # just to get metadata
-                    resampling_method="cubic",
-                )
-
-                # scale to float32 if not QA_PIXEL
-                if "QA_PIXEL" in band.name:
-                    data = data.astype(np.uint8)
-                else:
-                    data = data.astype(np.float32) / 27500.0 - 0.2  # L8/9 SR scaling
-
-                if i == 0:
-                    stacked_data = data
-                else:
-                    stacked_data = np.vstack((stacked_data, data))
-            # transpose to (H,W,C)
-            stacked_data = np.transpose(stacked_data, (1, 2, 0))  # (H,W,C)
-            print(f"Processed {product.name}, stacked shape: {stacked_data.shape}")
-            # save in subdir L8_9 in processed_data_path
-            os.makedirs(
-                Path(self.processed_data_path) / "L8_9" / product.name, exist_ok=True
-            )
-            output_file = (
-                Path(self.processed_data_path)
-                / "L8_9"
-                / product.name
-                / f"{product.name}.npy"
-            )
-            np.save(output_file, stacked_data)
-
-
-
-    def preprocess_fusion(self,product_type:str):
-        #need to consider 2 cases: 1-data after mosaic process (resampling stacking already done) -2 raw sen2like data
-        if product_type == 'raw':
-            products_s2 = self._discover_products("S2")
-            products_ls8_9 = self._discover_products("L8_9")
-            products = products_s2 + products_ls8_9
-            target_bands = ['B01','B02','B03','B04','B8A','B11','B12']
-            #reference band is B04 of a product in products
-            for product in products:
-                bands = self._find_band_file(products[0], subdir_filter="IMG_DATA/")
-                reference_band = next((b for b in bands if 'B04' in b.name), None)
-                #resample to reference band and stack only target bands
-                selected_bands = []
-                for band in target_bands:
-                    for bfile in bands:
-                        if band in bfile.name:
-                            selected_bands.append(bfile)
-                sorted_bands = sorted(selected_bands, key=lambda x: x.name)
-                selected_bands = sorted_bands
-                for i, band in enumerate(selected_bands):
-                    if "SCL" or "OMN" in band.name:
-                        resampling_method = "nearest"
-                    else:
-                        resampling_method = "cubic"
-
-                    data, _, _, _ = self._resample_band(
-                        band,
-                        reference_band_path=reference_band,
-                        resampling_method=resampling_method,
-                    )
-
-                    # scale to float32 if not SCL
-                    if "SCL" in band.name:
-                        data = data.astype(np.uint8)
-
-                    else:
-                        data = data.astype(np.float32) / 10000.0
-
-                    if i == 0:
-                        stacked_data = data
-                    else:
-                        stacked_data = np.vstack((stacked_data, data))
-                # transpose to (H,W,C)
-                stacked_data = np.transpose(stacked_data, (1, 2, 0))  # (H,W,C)
-                # print(f"Processed {product.name}, stacked shape: {stacked_data.shape}")
-                # save in subdir fusion in processed_data_path
-                os.makedirs(
-                    Path(self.processed_data_path) / "fusion" / product.name, exist_ok=True
-                )
-                output_file = (
-                    Path(self.processed_data_path)
-                    / "fusion"
-                    / product.name
-                    / f"{product.name}.npy"
-                )
-                np.save(output_file, stacked_data)
-        elif product_type == 'mosaic':
-            #bands are already resampled and stacked in a single file per product .TIF --> save as .npy
-            for product in self._discover_products("stacked_fusion"):
-                with rasterio.open(product) as src:
-                    data = src.read()
-                    data = np.transpose(data, (1, 2, 0))  # (H,W,C)
-                    # print min and max for each band for debugging
-                    # print(f"Processed {product.name}, stacked shape: {data.shape}")
-                    # save in subdir fusion in processed_data_path
-                    os.makedirs(
-                        Path(self.processed_data_path) / "fusion" / product.name, exist_ok=True
-                    )
-                    output_file = (
-                        Path(self.processed_data_path)
-                        / "fusion"
-                        / product.name
-                        / f"{product.name}.npy"
-                    )
-                    np.save(output_file, data)
-
-                
-
-        
-
-
-        
-
-
-
+    @abstractmethod
+    def process_product(self, product: Path, date: str) -> tuple:
         pass
 
     def run(self):
-        self.preprocess_s2()
-        # self.preprocess_s1()
-        self.preprocess_l8_9()
+        products = self.find_products()
+        grouped = self.group_products(products)
+
+        for date, items in tqdm(
+            grouped.items(), desc=f"Processing {self.__class__.__name__}"
+        ):
+            for item in items:
+                table, output_dir, filename = self.process_product_item(date, item)
+                os.makedirs(output_dir, exist_ok=True)
+                table.write_parquet(output_dir / filename)
+
+    @abstractmethod
+    def process_product_item(self, date: str, item: tuple) -> Tuple:
+        pass
+
+
+class S2Handler(BaseProductHandler):
+    def find_products(self) -> List[Path]:
+        return finders._find_s2()
+
+    def group_products(self, products: List[Path]) -> Dict:
+        return finders._group_by_date_and_tile_id(products)
+
+    def get_output_dir(self, date: str, tile_id: str) -> Path:
+        date_dir = self.processed_data_path / "S2" / date
+        return date_dir / tile_id
+
+    def process_product_item(self, date: str, item: tuple) -> Tuple:
+        tile_id, product = item
+        band_files = finders._find_band_file(product)
+        table = raster_helpers.rasterchef(band_files, ref_band="B04", date=date)
+        output_dir = self.get_output_dir(date, tile_id)
+        filename = f"{product.name}.parquet"
+        return table, output_dir, filename
+
+    def process_product(self, product: Path, date: str) -> tuple:
+        pass
+
+
+class LSHandler(BaseProductHandler):
+    def find_products(self) -> List[Path]:
+        return finders._find_ls()
+
+    def group_products(self, products: List[Path]) -> Dict:
+        return finders._group_by_date_and_row_col(products)
+
+    def get_output_dir(self, date: str, row: str, col: str) -> Path:
+        date_dir = self.processed_data_path / "LS" / date
+        return date_dir / row / col
+
+    def process_product_item(self, date: str, item: tuple) -> Tuple:
+        row, col, product = item
+        band_files = finders._find_band_file(product)
+        table = raster_helpers.rasterchef(band_files, ref_band="B04", date=date)
+        output_dir = self.get_output_dir(date, row, col)
+        filename = f"{product.name}.parquet"
+        return table, output_dir, filename
+
+    def process_product(self, product: Path, date: str) -> tuple:
+        pass
+
+
+class S1Handler(BaseProductHandler):
+    def find_products(self) -> List[Path]:
+        return finders._find_s1()
+
+    def group_products(self, products: List[Path]) -> Dict:
+        grouped = {}
+        for product in products:
+            parts = product.name.split("_")
+            datetime_token = parts[4]
+            date = datetime_token[:8]
+
+            if date not in grouped:
+                grouped[date] = []
+
+            grouped[date].append((product,))
+
+        return grouped
+
+    def get_output_dir(self, date: str, product_name: str) -> Path:
+        date_dir = self.processed_data_path / "S1" / date
+        return date_dir / product_name
+
+    def process_product_item(self, date: str, item: tuple) -> Tuple:
+        product = item[0]
+
+        measurements_dir = product / "measurement"
+        if not measurements_dir.exists():
+            measurements_dir = product
+
+        pol_files = {}
+        for tiff_file in measurements_dir.glob("*.tiff"):
+            filename = tiff_file.stem.lower()
+            if "vv" in filename:
+                pol_files["VV"] = tiff_file
+            elif "vh" in filename:
+                pol_files["VH"] = tiff_file
+
+        band_files = [pol_files.get("VV"), pol_files.get("VH")]
+        band_files = [f for f in band_files if f is not None]
+
+        table = raster_helpers.rasterchef(
+            band_files,
+            ref_band=(
+                band_files[0].name.split("/")[-1].split(".")[0] if band_files else "VV"
+            ),
+            date=date,
+        )
+        output_dir = self.get_output_dir(date, product.name)
+        filename = f"{product.name}.parquet"
+        return table, output_dir, filename
+
+    def process_product(self, product: Path, date: str) -> tuple:
+        pass
+
+
+class FusionHandler(BaseProductHandler):
+    def __init__(
+        self, raw_data_path: Path, processed_data_path: Path, fusion_input_path: Path
+    ):
+        super().__init__(raw_data_path, processed_data_path)
+        self.fusion_input_path = fusion_input_path
+
+    def find_products(self) -> List[Path]:
+        products = []
+        for parquet_file in self.fusion_input_path.rglob("*.parquet"):
+            products.append(parquet_file)
+        return products
+
+    def group_products(self, products: List[Path]) -> Dict:
+        grouped = {}
+        for product in products:
+            parent_dir = product.parent.name
+
+            if parent_dir not in grouped:
+                grouped[parent_dir] = []
+
+            grouped[parent_dir].append((product,))
+
+        return grouped
+
+    def get_output_dir(self, date: str, product_name: str) -> Path:
+        return self.processed_data_path / "fusion" / date / product_name
+
+    def process_product_item(self, date: str, item: tuple) -> Tuple:
+        parquet_file = item[0]
+
+        table = pl.read_parquet(parquet_file)
+
+        product_name = parquet_file.stem
+        output_dir = self.get_output_dir(date, product_name)
+        filename = f"{product_name}.parquet"
+
+        return table, output_dir, filename
+
+    def process_product(self, product: Path, date: str) -> tuple:
+        pass
+
+
+class Preprocess:
+    def __init__(self):
+        self.raw_data_path = Path(config.RAW_DATA)
+        self.processed_data_path = Path(config.PROCESSED_DATA)
+
+        self.handlers = {
+            "s2": S2Handler(self.raw_data_path, self.processed_data_path),
+            "ls": LSHandler(self.raw_data_path, self.processed_data_path),
+            "s1": S1Handler(self.raw_data_path, self.processed_data_path),
+        }
+
+    def add_fusion_handler(self, fusion_input_path: Path):
+        self.handlers["fusion"] = FusionHandler(
+            self.raw_data_path, self.processed_data_path, fusion_input_path
+        )
+
+    def run(self, sensor_types: List[str] = None):
+        if sensor_types is None:
+            sensor_types = ["s2", "ls"]
+
+        for sensor_type in sensor_types:
+            if sensor_type in self.handlers:
+                print(f"\nProcessing {sensor_type.upper()}...")
+                self.handlers[sensor_type].run()
+            else:
+                print(f"Warning: No handler found for {sensor_type}")

@@ -1,7 +1,7 @@
 import timm
 import torch
 import torch.nn as nn
-from encoder_base import EncoderBase
+from .encoder_base import EncoderBase
 from torchgeo.models import (
     DOFALarge16_Weights,
     dofa_large_patch16_224,
