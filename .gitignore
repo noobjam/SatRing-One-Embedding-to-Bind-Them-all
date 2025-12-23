@@ -145,3 +145,6 @@ secrets.*
 *.pem
 notebooks/*.osm.pbf
 notebooks/*.tif
+*.tif
+*.osm.pbf
+data/
