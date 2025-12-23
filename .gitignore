@@ -143,3 +143,5 @@ secrets.*
 *.secret.*
 *.key
 *.pem
+notebooks/*.osm.pbf
+notebooks/*.tif
