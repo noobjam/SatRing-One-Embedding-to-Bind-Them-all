@@ -15,19 +15,14 @@ class SequenceDataset(Dataset):
         self.sequences = self._create_sequences()
         self.locations = list(self.location_map.keys())
         
-        # Load OSM cache if available
-        self.osm_cache = {}
-        osm_cache_path = Path(processed_data).parent / 'osm_cache_rwanda.pkl'
-        if osm_cache_path.exists():
-            import pickle
-            with open(osm_cache_path, 'rb') as f:
-                self.osm_cache = pickle.load(f)
-            print(f"✓ Loaded OSM cache with {len(self.osm_cache)} locations")
-            num_with_tags = sum(1 for v in self.osm_cache.values() if v > 0)
-            print(f"  {num_with_tags} locations have OSM tags")
-        else:
-            print(f"⚠ Warning: OSM cache not found at {osm_cache_path}")
-            print(f"  L_semantic will be 0. Run 'python scripts/cache_osm_rwanda.py' to fix.")
+    def __init__(self, processed_data: str, sensor_type: str = 'fusion', sequence_length: int = 5, augment=True):
+        self.sequence_length = sequence_length
+        self.processed_data = Path(processed_data) / sensor_type
+        self.augment = augment
+        self.location_map = defaultdict(list)
+        self._load_files()
+        self.sequences = self._create_sequences()
+        self.locations = list(self.location_map.keys())
 
     def _load_files(self):
         for product in self.processed_data.iterdir():
@@ -69,20 +64,13 @@ class SequenceDataset(Dataset):
         # It could be the same sequence (augmented), or a different time, or different sensor
         v2_tensor, v2_times, v2_sensors = self._sample_positive_view(loc)
         
-        # Extract OSM tag for this location
-        # For simplicity, we'll cache OSM tags by location
-        # In practice, you'd precompute this and store it
-        osm_tag = self._get_osm_tag(loc)
-        
         return {
             "v1_img": v1_tensor,
             "v1_t": torch.tensor(v1_times, dtype=torch.long),
             "v1_s": torch.tensor(v1_sensors, dtype=torch.long),
-            "v1_osm": osm_tag,  # NEW: OSM land use tag (int)
             "v2_img": v2_tensor,
             "v2_t": torch.tensor(v2_times, dtype=torch.long),
             "v2_s": torch.tensor(v2_sensors, dtype=torch.long),
-            "v2_osm": osm_tag,  # NEW: Same location, so same OSM tag
             "loc_idx": self.locations.index(loc) # Slow, but simple for now. Ideally pre-compute.
         }
 
@@ -128,17 +116,6 @@ class SequenceDataset(Dataset):
             # Fallback
             return 0, 'unknown', filepath
     
-    def _get_osm_tag(self, loc):
-        """
-        Get OSM land use tag for a location from cached OSM data.
-        
-        Args:
-            loc: Location tuple (i, j) or string
-        
-        Returns:
-            int: OSM tag (0=unknown, 1=forest, 2=farmland, etc.)
-        """
-        return self.osm_cache.get(loc, 0)
 
     def _apply_augmentations(self, tensor):
         # Random flip
